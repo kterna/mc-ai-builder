@@ -3,6 +3,7 @@ import cors from 'cors';
 import bodyParser from 'body-parser';
 import fs from 'fs';
 import path from 'path';
+import { Readable } from 'stream';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -11,6 +12,7 @@ const __dirname = path.dirname(__filename);
 // Electron 环境检测
 const isElectron = process.env.ELECTRON_MODE === 'true';
 const BASE_PATH = isElectron ? process.resourcesPath : __dirname;
+const ADMIN_PROFILES_PATH = path.join(BASE_PATH, 'config', 'admin-profiles.json');
 
 /**
  * Safely read a file with automatic encoding detection.
@@ -32,6 +34,29 @@ function readFileWithEncoding(filePath) {
     return buffer.toString('utf-8');
 }
 
+function loadAdminProfilesConfig() {
+    if (!fs.existsSync(ADMIN_PROFILES_PATH)) {
+        return { enabled: false, profiles: [] };
+    }
+
+    try {
+        const raw = readFileWithEncoding(ADMIN_PROFILES_PATH);
+        const parsed = JSON.parse(raw);
+        return {
+            enabled: parsed.enabled !== false,
+            profiles: Array.isArray(parsed.profiles) ? parsed.profiles : []
+        };
+    } catch (err) {
+        console.error('[Self-Use] Failed to load admin profiles:', err);
+        return { enabled: false, profiles: [] };
+    }
+}
+
+function normalizeBaseUrl(baseUrl) {
+    if (!baseUrl) return 'https://api.openai.com/v1';
+    return String(baseUrl).replace(/\/+$/, '');
+}
+
 const app = express();
 const PORT = process.env.PORT || 3001;
 
@@ -51,6 +76,166 @@ const STRUCTURES_DIR = path.join(BASE_PATH, 'src', 'structures');
 if (!fs.existsSync(STRUCTURES_DIR)) {
     fs.mkdirSync(STRUCTURES_DIR, { recursive: true });
 }
+
+// ============ SELF-USE MODE (Admin Profiles + Proxy) ============
+
+// Get available admin profiles (safe fields only; never return URL/key)
+app.get('/api/admin-profiles', (req, res) => {
+    const config = loadAdminProfilesConfig();
+    const safeProfiles = (config.profiles || [])
+        .filter(p => p && p.id && p.name)
+        .map(p => ({
+            id: p.id,
+            name: p.name,
+            model: p.model || null,
+            hasImageModel: !!p.imageModel
+        }));
+
+    res.json({ enabled: config.enabled, profiles: safeProfiles });
+});
+
+// Chat Completions proxy (supports streaming)
+app.post('/api/proxy/chat', async (req, res) => {
+    const { profileId, ...clientBody } = req.body || {};
+
+    if (!profileId) {
+        return res.status(400).json({ error: 'Missing profileId' });
+    }
+    if (!clientBody.messages || !Array.isArray(clientBody.messages)) {
+        return res.status(400).json({ error: 'Missing messages' });
+    }
+
+    const config = loadAdminProfilesConfig();
+    if (!config.enabled) {
+        return res.status(403).json({ error: 'Self-use mode is disabled on server' });
+    }
+
+    const profile = (config.profiles || []).find(p => p.id === profileId);
+    if (!profile) {
+        return res.status(404).json({ error: `Unknown profileId: ${profileId}` });
+    }
+    if (!profile.apiKey) {
+        return res.status(500).json({ error: `Profile "${profileId}" is missing apiKey` });
+    }
+
+    const upstreamBaseUrl = normalizeBaseUrl(profile.baseUrl);
+    const upstreamUrl = `${upstreamBaseUrl}/chat/completions`;
+
+    const upstreamBody = {
+        ...clientBody,
+        model: profile.model || clientBody.model
+    };
+
+    const controller = new AbortController();
+    req.on('close', () => controller.abort());
+
+    try {
+        const upstream = await fetch(upstreamUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${profile.apiKey}`
+            },
+            body: JSON.stringify(upstreamBody),
+            signal: controller.signal
+        });
+
+        if (!upstream.ok) {
+            const errText = await upstream.text().catch(() => '');
+            return res.status(upstream.status).send(errText || upstream.statusText);
+        }
+
+        const isStream = upstreamBody.stream === true;
+        if (!isStream) {
+            const data = await upstream.json().catch(async () => ({ raw: await upstream.text() }));
+            return res.json(data);
+        }
+
+        res.status(200);
+        res.setHeader('Content-Type', upstream.headers.get('content-type') || 'text/event-stream; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+
+        if (!upstream.body) {
+            return res.end();
+        }
+
+        const nodeStream = Readable.fromWeb(upstream.body);
+        nodeStream.on('error', (err) => {
+            console.error('[Self-Use] Upstream stream error:', err);
+            try { res.end(); } catch { }
+        });
+        nodeStream.pipe(res);
+    } catch (err) {
+        if (err?.name === 'AbortError') return;
+        console.error('[Self-Use] Proxy chat error:', err);
+        res.status(500).json({ error: err.message || 'Proxy chat failed' });
+    }
+});
+
+// Image Generations proxy
+app.post('/api/proxy/images', async (req, res) => {
+    const { profileId, ...clientBody } = req.body || {};
+
+    if (!profileId) {
+        return res.status(400).json({ error: 'Missing profileId' });
+    }
+    if (!clientBody.prompt) {
+        return res.status(400).json({ error: 'Missing prompt' });
+    }
+
+    const config = loadAdminProfilesConfig();
+    if (!config.enabled) {
+        return res.status(403).json({ error: 'Self-use mode is disabled on server' });
+    }
+
+    const profile = (config.profiles || []).find(p => p.id === profileId);
+    if (!profile) {
+        return res.status(404).json({ error: `Unknown profileId: ${profileId}` });
+    }
+    if (!profile.apiKey) {
+        return res.status(500).json({ error: `Profile "${profileId}" is missing apiKey` });
+    }
+
+    const upstreamBaseUrl = normalizeBaseUrl(profile.baseUrl);
+    const upstreamUrl = `${upstreamBaseUrl}/images/generations`;
+
+    const upstreamBody = {
+        ...clientBody,
+        model: profile.imageModel || clientBody.model
+    };
+
+    if (!upstreamBody.model) {
+        return res.status(500).json({ error: `Profile "${profileId}" is missing imageModel` });
+    }
+
+    const controller = new AbortController();
+    req.on('close', () => controller.abort());
+
+    try {
+        const upstream = await fetch(upstreamUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${profile.apiKey}`
+            },
+            body: JSON.stringify(upstreamBody),
+            signal: controller.signal
+        });
+
+        if (!upstream.ok) {
+            const errText = await upstream.text().catch(() => '');
+            return res.status(upstream.status).send(errText || upstream.statusText);
+        }
+
+        const data = await upstream.json().catch(async () => ({ raw: await upstream.text() }));
+        return res.json(data);
+    } catch (err) {
+        if (err?.name === 'AbortError') return;
+        console.error('[Self-Use] Proxy images error:', err);
+        res.status(500).json({ error: err.message || 'Proxy images failed' });
+    }
+});
 
 // ============ AGENT SKILLS API ============
 const SKILLS_BASE_DIR = process.env.SKILLS_PATH || path.join(BASE_PATH, 'src', 'skills');

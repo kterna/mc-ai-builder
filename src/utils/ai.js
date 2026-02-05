@@ -32,9 +32,11 @@ export const fetchAIResponseStream = async (
     onChunk = null,
     currentCode = null,
     imageUrl = null,
-    apiHistory = null  // NEW: API-level conversation history
+    apiHistory = null,  // NEW: API-level conversation history
+    selfUseConfig = null // NEW: Self-use mode config: { enabled: boolean, profileId: string }
 ) => {
-    if (!apiKey) throw new Error("API Key is missing.");
+    const isSelfUse = selfUseConfig?.enabled && selfUseConfig?.profileId;
+    if (!isSelfUse && !apiKey) throw new Error("API Key is missing.");
 
     // Detect architectural style from user prompt and inject specialized knowledge
     const detectedStyle = detectStyle(userPrompt);
@@ -137,16 +139,17 @@ builder.fill(x1, topY, z1, x2, topY + 2, z2, 'WALL_MATERIAL');
 
     messages.push(userMessage);
 
-    console.log('[AI Stream] Sending request to:', `${baseUrl}/chat/completions`);
+    console.log('[AI Stream] Sending request to:', isSelfUse ? 'http://localhost:3001/api/proxy/chat' : `${baseUrl}/chat/completions`);
 
     try {
-        const response = await fetch(`${baseUrl}/chat/completions`, {
+        const response = await fetch(isSelfUse ? 'http://localhost:3001/api/proxy/chat' : `${baseUrl}/chat/completions`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'Authorization': `Bearer ${apiKey}`
+                ...(isSelfUse ? {} : { 'Authorization': `Bearer ${apiKey}` })
             },
             body: JSON.stringify({
+                ...(isSelfUse ? { profileId: selfUseConfig.profileId } : {}),
                 model: model,
                 messages: messages,
                 max_tokens: 323840,
@@ -288,20 +291,23 @@ export const generateImage = async (
     prompt,
     apiKey,
     baseUrl = 'https://api.openai.com/v1',
-    model = 'dall-e-3'
+    model = 'dall-e-3',
+    selfUseConfig = null // NEW: Self-use mode config: { enabled: boolean, profileId: string }
 ) => {
-    if (!apiKey) throw new Error("API Key is missing.");
+    const isSelfUse = selfUseConfig?.enabled && selfUseConfig?.profileId;
+    if (!isSelfUse && !apiKey) throw new Error("API Key is missing.");
 
     console.log('[AI Image] Generating:', prompt);
 
     try {
-        const response = await fetch(`${baseUrl}/images/generations`, {
+        const response = await fetch(isSelfUse ? 'http://localhost:3001/api/proxy/images' : `${baseUrl}/images/generations`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'Authorization': `Bearer ${apiKey}`
+                ...(isSelfUse ? {} : { 'Authorization': `Bearer ${apiKey}` })
             },
             body: JSON.stringify({
+                ...(isSelfUse ? { profileId: selfUseConfig.profileId } : {}),
                 model: model,
                 prompt: prompt,
                 n: 1,

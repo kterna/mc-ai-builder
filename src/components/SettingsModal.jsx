@@ -63,7 +63,17 @@ Generate complete, working code. Use components for reusable parts.`
     }
 };
 
-export default function SettingsModal({ isOpen, onClose, onSave, initialSettings, language, setLanguage }) {
+export default function SettingsModal({
+    isOpen,
+    onClose,
+    onSave,
+    initialSettings,
+    adminProfiles = [],
+    adminProfilesEnabled = false,
+    adminProfilesLoaded = false,
+    language,
+    setLanguage
+}) {
     const [settings, setSettings] = useState(() => {
         const defaults = {
             apiKey: '',
@@ -72,6 +82,7 @@ export default function SettingsModal({ isOpen, onClose, onSave, initialSettings
             maxTokens: 16384,
             mouseSensitivity: 1.0,
             fov: 75,
+            selfUseMode: { enabled: false, profileId: '' },
             generationMode: 'fast',
             agentVersion: 'v2',
             debugMode: false,
@@ -808,6 +819,15 @@ ${newResourceContent.trim() || '# 参考文档\n'}`;
                 interfaceDesc: 'Customize the look and feel of the application.',
                 cameraDesc: 'Adjust how you view and navigate the 3D world.',
                 apiDesc: 'Configure AI model connections and endpoints.',
+                apiMode: 'Mode',
+                apiModeDesc: 'Self-use mode calls AI through the local server proxy (API keys stay on the server).',
+                selfUseMode: 'Self-Use',
+                customMode: 'Custom',
+                selfUseProfile: 'Admin Profile',
+                selectProfile: 'Select a profile',
+                loading: 'Loading...',
+                selfUseDisabledServer: 'Self-use mode is disabled on server (configure config/admin-profiles.json).',
+                selfUseNoProfiles: 'No admin profiles found (configure config/admin-profiles.json).',
                 optional: 'Optional',
                 modelName: 'Model Name',
                 maxTokens: 'Max Tokens',
@@ -891,6 +911,15 @@ ${newResourceContent.trim() || '# 参考文档\n'}`;
                 interfaceDesc: '自定义应用程序的外观和语言。',
                 cameraDesc: '调整在 3D 世界中的查看和导航方式。',
                 apiDesc: '配置 AI 模型连接和端点。',
+                apiMode: '使用模式',
+                apiModeDesc: '自用模式会通过本机服务器代理调用（API Key 保存在服务器端）。',
+                selfUseMode: '自用模式',
+                customMode: '自定义模式',
+                selfUseProfile: '管理员预设',
+                selectProfile: '请选择一个预设配置',
+                loading: '加载中...',
+                selfUseDisabledServer: '服务器端未启用自用模式（请配置 config/admin-profiles.json）。',
+                selfUseNoProfiles: '未找到管理员预设配置（请配置 config/admin-profiles.json）。',
                 optional: '可选',
                 modelName: '模型名称',
                 maxTokens: '最大 Token 数',
@@ -2285,38 +2314,113 @@ ${contentWithoutFrontmatter}`;
                         {/* API Settings */}
                         {activeTab === 'api' && (
                             <div className="space-y-5 animate-in slide-in-from-right-4 duration-300 fade-in">
-                                <div className="space-y-1.5">
-                                    <label className="text-xs font-medium text-neutral-400 block">{t('baseUrl')}</label>
-                                    <input
-                                        type="text"
-                                        value={settings.baseUrl}
-                                        onChange={(e) => setSettings({ ...settings, baseUrl: e.target.value })}
-                                        className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2.5 text-sm text-neutral-200 focus:border-orange-500 outline-none transition-all placeholder:text-neutral-700 font-mono"
-                                        placeholder="https://api.openai.com/v1"
-                                    />
+                                {/* Mode Selection (Self-Use / Custom) */}
+                                <div className="space-y-2">
+                                    <label className="text-xs font-medium text-neutral-400 block">{t('apiMode')}</label>
+                                    <div className="flex gap-2">
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                const firstProfileId = adminProfiles?.[0]?.id || '';
+                                                setSettings({
+                                                    ...settings,
+                                                    selfUseMode: {
+                                                        enabled: true,
+                                                        profileId: settings.selfUseMode?.profileId || firstProfileId
+                                                    }
+                                                });
+                                            }}
+                                            className={`flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-all ${settings.selfUseMode?.enabled
+                                                ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30'
+                                                : 'bg-black/40 text-neutral-400 border border-white/10 hover:border-white/20'
+                                                }`}
+                                        >
+                                            {t('selfUseMode')}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setSettings({
+                                                ...settings,
+                                                selfUseMode: { ...(settings.selfUseMode || {}), enabled: false }
+                                            })}
+                                            className={`flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-all ${!settings.selfUseMode?.enabled
+                                                ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30'
+                                                : 'bg-black/40 text-neutral-400 border border-white/10 hover:border-white/20'
+                                                }`}
+                                        >
+                                            {t('customMode')}
+                                        </button>
+                                    </div>
+                                    <p className="text-[10px] text-neutral-600">{t('apiModeDesc')}</p>
                                 </div>
 
-                                <div className="space-y-1.5">
-                                    <label className="text-xs font-medium text-neutral-400 block">{t('apiKey')}</label>
-                                    <input
-                                        type="password"
-                                        value={settings.apiKey}
-                                        onChange={(e) => setSettings({ ...settings, apiKey: e.target.value })}
-                                        className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2.5 text-sm text-neutral-200 focus:border-orange-500 outline-none transition-all placeholder:text-neutral-700 font-mono"
-                                        placeholder="sk-..."
-                                    />
-                                </div>
+                                {settings.selfUseMode?.enabled && (
+                                    <div className="space-y-1.5">
+                                        <label className="text-xs font-medium text-neutral-400 block">{t('selfUseProfile')}</label>
+                                        <select
+                                            value={settings.selfUseMode?.profileId || ''}
+                                            onChange={(e) => setSettings({
+                                                ...settings,
+                                                selfUseMode: { ...(settings.selfUseMode || {}), profileId: e.target.value }
+                                            })}
+                                            disabled={!adminProfilesLoaded || !adminProfilesEnabled}
+                                            className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2.5 text-sm text-neutral-200 focus:border-orange-500 outline-none transition-all"
+                                        >
+                                            <option value="" disabled>
+                                                {adminProfilesLoaded ? t('selectProfile') : t('loading')}
+                                            </option>
+                                            {(adminProfiles || []).map(p => (
+                                                <option key={p.id} value={p.id}>
+                                                    {p.name}{p.model ? ` (${p.model})` : ''}{p.hasImageModel ? '' : ' [No Image]'}
+                                                </option>
+                                            ))}
+                                        </select>
 
-                                <div className="space-y-1.5">
-                                    <label className="text-xs font-medium text-neutral-400 block">{t('modelName')}</label>
-                                    <input
-                                        type="text"
-                                        value={settings.model}
-                                        onChange={(e) => setSettings({ ...settings, model: e.target.value })}
-                                        className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2.5 text-sm text-neutral-200 focus:border-orange-500 outline-none transition-all placeholder:text-neutral-700 font-mono"
-                                        placeholder="claude-3-5-sonnet-20241022"
-                                    />
-                                </div>
+                                        {adminProfilesLoaded && !adminProfilesEnabled && (
+                                            <p className="text-[10px] text-red-400/80">{t('selfUseDisabledServer')}</p>
+                                        )}
+                                        {adminProfilesLoaded && adminProfilesEnabled && (adminProfiles?.length || 0) === 0 && (
+                                            <p className="text-[10px] text-red-400/80">{t('selfUseNoProfiles')}</p>
+                                        )}
+                                    </div>
+                                )}
+
+                                {!settings.selfUseMode?.enabled && (
+                                    <>
+                                        <div className="space-y-1.5">
+                                            <label className="text-xs font-medium text-neutral-400 block">{t('baseUrl')}</label>
+                                            <input
+                                                type="text"
+                                                value={settings.baseUrl}
+                                                onChange={(e) => setSettings({ ...settings, baseUrl: e.target.value })}
+                                                className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2.5 text-sm text-neutral-200 focus:border-orange-500 outline-none transition-all placeholder:text-neutral-700 font-mono"
+                                                placeholder="https://api.openai.com/v1"
+                                            />
+                                        </div>
+
+                                        <div className="space-y-1.5">
+                                            <label className="text-xs font-medium text-neutral-400 block">{t('apiKey')}</label>
+                                            <input
+                                                type="password"
+                                                value={settings.apiKey}
+                                                onChange={(e) => setSettings({ ...settings, apiKey: e.target.value })}
+                                                className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2.5 text-sm text-neutral-200 focus:border-orange-500 outline-none transition-all placeholder:text-neutral-700 font-mono"
+                                                placeholder="sk-..."
+                                            />
+                                        </div>
+
+                                        <div className="space-y-1.5">
+                                            <label className="text-xs font-medium text-neutral-400 block">{t('modelName')}</label>
+                                            <input
+                                                type="text"
+                                                value={settings.model}
+                                                onChange={(e) => setSettings({ ...settings, model: e.target.value })}
+                                                className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2.5 text-sm text-neutral-200 focus:border-orange-500 outline-none transition-all placeholder:text-neutral-700 font-mono"
+                                                placeholder="claude-3-5-sonnet-20241022"
+                                            />
+                                        </div>
+                                    </>
+                                )}
 
                                 <div className="space-y-1.5">
                                     <label className="text-xs font-medium text-neutral-400 block">{t('maxTokens')}</label>

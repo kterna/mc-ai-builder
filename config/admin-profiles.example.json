@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "profiles": [
+    {
+      "id": "openai-default",
+      "name": "OpenAI Default",
+      "baseUrl": "https://api.openai.com/v1",
+      "apiKey": "sk-REPLACE_ME",
+      "model": "gpt-4o-mini",
+      "imageModel": "dall-e-3"
+    }
+  ]
+}

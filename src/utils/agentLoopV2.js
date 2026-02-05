@@ -1525,8 +1525,14 @@ export async function runAgentLoopV2(
     imageUrl = null,
     signal = null,
     conversationHistory = null,
-    agentConfig = null // NEW: Agent configuration from settings
+    agentConfig = null, // NEW: Agent configuration from settings
+    selfUseConfig = null // NEW: Self-use mode config: { enabled: boolean, profileId: string }
 ) {
+    const isSelfUse = selfUseConfig?.enabled && selfUseConfig?.profileId;
+    if (!isSelfUse && !apiKey) {
+        throw new Error('API Key is missing.');
+    }
+
     // Build system prompt based on config
     const config = agentConfig || {};
     const basePrompt = config.agentSystemPrompt || SYSTEM_PROMPT;
@@ -1687,21 +1693,32 @@ Example: modify_code({ action: "replace", startLine: 15, endLine: 20, content: "
             callbacks.onDevLog?.({ type: 'info', content: '🔄 Calling API...' });
             callbacks.onStatus?.(`⏳ 等待 AI 响应中... (Step ${iteration})`);
             
+            const isSelfUseRequest = isSelfUse === true;
+            const url = isSelfUseRequest ? 'http://localhost:3001/api/proxy/chat' : `${baseUrl}/chat/completions`;
+            const body = isSelfUseRequest ? {
+                profileId: selfUseConfig.profileId,
+                messages: requestMessages,
+                tools: getToolsSchemaV2(enabledTools),
+                tool_choice: 'auto',
+                max_tokens: config.maxTokens || 16384,
+                stream: false
+            } : {
+                model: model,
+                messages: requestMessages,
+                tools: getToolsSchemaV2(enabledTools),
+                tool_choice: 'auto',
+                max_tokens: config.maxTokens || 16384
+            };
+
             const response = await fetchWithRetry(
-                `${baseUrl}/chat/completions`,
+                url,
                 {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${apiKey}`
+                        ...(isSelfUseRequest ? {} : { 'Authorization': `Bearer ${apiKey}` })
                     },
-                    body: JSON.stringify({
-                        model: model,
-                        messages: requestMessages,
-                        tools: getToolsSchemaV2(enabledTools),
-                        tool_choice: 'auto',
-                        max_tokens: config.maxTokens || 16384
-                    }),
+                    body: JSON.stringify(body),
                     signal
                 },
                 callbacks
@@ -1979,9 +1996,10 @@ export async function agentGenerateV2(
     imageUrl,
     signal,
     conversationHistory = null,
-    agentConfig = null // NEW: Agent configuration
+    agentConfig = null, // NEW: Agent configuration
+    selfUseConfig = null // NEW: Self-use mode config: { enabled: boolean, profileId: string }
 ) {
-    return runAgentLoopV2(userPrompt, apiKey, baseUrl, model, callbacks, currentCode, imageUrl, signal, conversationHistory, agentConfig);
+    return runAgentLoopV2(userPrompt, apiKey, baseUrl, model, callbacks, currentCode, imageUrl, signal, conversationHistory, agentConfig, selfUseConfig);
 }
 
 export { generateAgentSkillsPrompt };

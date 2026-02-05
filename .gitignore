@@ -20,6 +20,9 @@ pnpm-debug.log*
 .env.local
 .env.*.local
 
+# Private self-use admin profiles (contains API keys)
+config/admin-profiles.json
+
 # Output files
 output/
 

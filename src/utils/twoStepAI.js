@@ -305,11 +305,20 @@ export async function twoStepGenerateWithContext(
     model = 'gpt-4o-mini',
     callbacks = {},
     currentCode = null,
-    imageUrl = null
+    imageUrl = null,
+    selfUseConfig = null // NEW: Self-use mode config: { enabled: boolean, profileId: string }
 ) {
     const { onPlanStart, onPlanReady, onBuildStart, onChunk, onError, onStatus } = callbacks;
 
-    if (!apiKey) throw new Error("API Key is missing.");
+    const isSelfUse = selfUseConfig?.enabled && selfUseConfig?.profileId;
+    if (!isSelfUse && !apiKey) throw new Error("API Key is missing.");
+
+    const chatUrl = isSelfUse ? 'http://localhost:3001/api/proxy/chat' : `${baseUrl}/chat/completions`;
+    const chatHeaders = {
+        'Content-Type': 'application/json',
+        ...(isSelfUse ? {} : { 'Authorization': `Bearer ${apiKey}` })
+    };
+    const wrapBody = (body) => (isSelfUse ? { profileId: selfUseConfig.profileId, ...body } : body);
 
     // Helper for Status Updates
     const setStatus = (msg) => {
@@ -364,18 +373,16 @@ export async function twoStepGenerateWithContext(
     let plan = null;
 
     try {
-        const planResponse = await fetch(`${baseUrl}/chat/completions`, {
+        const planResponse = await fetch(chatUrl, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${apiKey}`
-            },
-            body: JSON.stringify({
+            headers: chatHeaders,
+            body: JSON.stringify(wrapBody({
                 model: model,
                 messages: conversation,
                 temperature: 0.7,
-                max_tokens: 323840
-            })
+                max_tokens: 323840,
+                stream: false
+            }))
         });
 
         if (!planResponse.ok) {
@@ -430,17 +437,15 @@ export async function twoStepGenerateWithContext(
 
         try {
             // We use NON-STREAMING here to allow validation before showing user
-            const response = await fetch(`${baseUrl}/chat/completions`, {
+            const response = await fetch(chatUrl, {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${apiKey}`
-                },
-                body: JSON.stringify({
+                headers: chatHeaders,
+                body: JSON.stringify(wrapBody({
                     model: model,
                     messages: conversation,
-                    temperature: 0.7
-                })
+                    temperature: 0.7,
+                    stream: false
+                }))
             });
 
             if (!response.ok) throw new Error(`API Error: ${response.statusText}`);
@@ -472,17 +477,15 @@ export async function twoStepGenerateWithContext(
                     content: `你的代码被截断了，请从以下位置继续生成（不要重复已有的代码）：\n\`\`\`\n${lastLines}\n\`\`\`\n请直接继续输出剩余的代码，不需要重新开始。`
                 });
                 
-                const continueResponse = await fetch(`${baseUrl}/chat/completions`, {
+                const continueResponse = await fetch(chatUrl, {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${apiKey}`
-                    },
-                    body: JSON.stringify({
+                    headers: chatHeaders,
+                    body: JSON.stringify(wrapBody({
                         model: model,
                         messages: conversation,
-                        temperature: 0.7
-                    })
+                        temperature: 0.7,
+                        stream: false
+                    }))
                 });
                 
                 if (continueResponse.ok) {
@@ -543,17 +546,15 @@ export async function twoStepGenerateWithContext(
             });
 
             try {
-                const refineResponse = await fetch(`${baseUrl}/chat/completions`, {
+                const refineResponse = await fetch(chatUrl, {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${apiKey}`
-                    },
-                    body: JSON.stringify({
+                    headers: chatHeaders,
+                    body: JSON.stringify(wrapBody({
                         model: model,
                         messages: conversation,
-                        temperature: 0.5 // Lower temperature for more focused refinement
-                    })
+                        temperature: 0.5, // Lower temperature for more focused refinement
+                        stream: false
+                    }))
                 });
 
                 if (refineResponse.ok) {

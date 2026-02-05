@@ -414,6 +414,7 @@ function App() {
       mouseSensitivity: 1.0,
       fov: 75,
       debugMode: false,
+      selfUseMode: { enabled: false, profileId: '' },
       concurrencyCount: 1  // 新增：默认并发数为 1
     };
     const merged = saved ? { ...defaults, ...JSON.parse(saved) } : defaults;
@@ -421,6 +422,17 @@ function App() {
     setAgentDebugMode(merged.debugMode === true);
     return merged;
   });
+
+  const [adminProfilesInfo, setAdminProfilesInfo] = useState(() => ({
+    loaded: false,
+    enabled: false,
+    profiles: []
+  }));
+
+  const selectedAdminProfile = adminProfilesInfo.profiles.find(p => p.id === apiSettings.selfUseMode?.profileId) || null;
+  const selfUseConfig = (adminProfilesInfo.enabled && apiSettings.selfUseMode?.enabled && selectedAdminProfile)
+    ? { enabled: true, profileId: selectedAdminProfile.id }
+    : null;
 
   const messages = currentMessages;
   const setMessages = updateCurrentMessages;
@@ -442,6 +454,59 @@ function App() {
     
     return () => clearInterval(heartbeatInterval);
   }, [syncSessions]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    fetch('http://localhost:3001/api/admin-profiles')
+      .then(r => r.json())
+      .then((data) => {
+        if (cancelled) return;
+        setAdminProfilesInfo({
+          loaded: true,
+          enabled: data?.enabled === true,
+          profiles: Array.isArray(data?.profiles) ? data.profiles : []
+        });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setAdminProfilesInfo({ loaded: true, enabled: false, profiles: [] });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!adminProfilesInfo.loaded || !adminProfilesInfo.enabled) return;
+    if (!adminProfilesInfo.profiles || adminProfilesInfo.profiles.length === 0) return;
+
+    // Auto-enable self-use mode for existing users who don't have selfUseMode saved yet
+    // (only if they also don't have an API key configured).
+    try {
+      const raw = localStorage.getItem('mc-ai-settings');
+      const parsed = raw ? JSON.parse(raw) : null;
+      const hasSelfUseModeSetting = parsed && Object.prototype.hasOwnProperty.call(parsed, 'selfUseMode');
+
+      if (hasSelfUseModeSetting) return;
+      if (apiSettings.apiKey && apiSettings.apiKey.trim()) return;
+
+      const firstProfileId = adminProfilesInfo.profiles[0]?.id;
+      if (!firstProfileId) return;
+
+      setApiSettings(prev => {
+        const updated = {
+          ...prev,
+          selfUseMode: { enabled: true, profileId: firstProfileId }
+        };
+        localStorage.setItem('mc-ai-settings', JSON.stringify(updated));
+        return updated;
+      });
+    } catch (e) {
+      // Ignore storage/JSON issues
+    }
+  }, [adminProfilesInfo.loaded, adminProfilesInfo.enabled, adminProfilesInfo.profiles, apiSettings.apiKey]);
 
   useEffect(() => {
     if (!isInitialized) return;
@@ -544,7 +609,8 @@ function App() {
         },
         currentCode,
         imageUrl,
-        apiConversationHistory
+        apiConversationHistory,
+        selfUseConfig
       );
 
       if (signal.aborted) {
@@ -744,7 +810,8 @@ function App() {
           maxTokens: apiSettings.maxTokens,
           officialSkillOverrides: apiSettings.officialSkillOverrides || {},
           officialScriptOverrides: apiSettings.officialScriptOverrides || {},
-        }
+        },
+        selfUseConfig
       );
 
       if (signal.aborted) {
@@ -1048,7 +1115,8 @@ function App() {
           optimizedPrompt,
           apiSettings.apiKey,
           apiSettings.baseUrl,
-          apiSettings.imageModel || 'dall-e-3' // Use configured image model
+          apiSettings.imageModel || 'dall-e-3', // Use configured image model
+          selfUseConfig
         );
 
         // Log result
@@ -1089,7 +1157,18 @@ function App() {
 
     // ============ API KEY VALIDATION ============
     // Check if API key is configured before proceeding with code generation
-    if (!apiSettings.apiKey || apiSettings.apiKey.trim() === '') {
+    const wantsSelfUse = apiSettings.selfUseMode?.enabled === true;
+
+    if (wantsSelfUse && !selfUseConfig) {
+      setMessages(p => [...p, {
+        role: 'system',
+        content: '❌ 自用模式未就绪！\n\n请打开设置 ⚙️ 选择一个管理员预设配置，或在服务器端创建并启用 `config/admin-profiles.json`。'
+      }]);
+      setIsProcessing(false);
+      return;
+    }
+
+    if (!selfUseConfig && (!apiSettings.apiKey || apiSettings.apiKey.trim() === '')) {
       setMessages(p => [...p, { 
         role: 'system', 
         content: '❌ API Key 未配置！请点击右上角的设置按钮 ⚙️ 配置你的 API Key。\n\n支持 OpenAI、DeepSeek、硅基流动等兼容 OpenAI 格式的 API。' 
@@ -1182,7 +1261,7 @@ function App() {
         }
       }
 
-      if (apiSettings.apiKey) {
+      if (apiSettings.apiKey || selfUseConfig) {
         // Use the passed imageUrl, attached images, or fall back to the stored reference image
         const activeImageUrls = imageUrl ? [imageUrl] : (attachedImages.length > 0 ? attachedImages : (referenceImageUrl ? [referenceImageUrl] : []));
         const activeImageUrl = activeImageUrls[0] || null; // Primary image for backward compatibility
@@ -1338,7 +1417,8 @@ function App() {
               }
             },
             currentCode,
-            activeImageUrl
+            activeImageUrl,
+            selfUseConfig
           );
 
           if (!result || !result.code) throw new Error("Precise generation failed to produce code.");
@@ -1537,7 +1617,8 @@ function App() {
               officialSkillOverrides: apiSettings.officialSkillOverrides || {},
               officialScriptOverrides: apiSettings.officialScriptOverrides || {},
               maxTokens: apiSettings.maxTokens || 16384
-            }
+            },
+            selfUseConfig
           );
 
           if (!result || !result.code) throw new Error("Agent generation failed to produce code.");
@@ -1594,7 +1675,8 @@ function App() {
             },
             currentCode, // Pass existing code for context
             activeImageUrl, // Pass Image URL for Vision models
-            apiConversationHistory // Pass API conversation history
+            apiConversationHistory, // Pass API conversation history
+            selfUseConfig
           );
 
           // Handle new return format: { content, messages }
@@ -1635,7 +1717,8 @@ function App() {
               },
               null, // Don't pass currentCode for continuation
               null, // No image for continuation
-              currentHistory // Use updated conversation history
+              currentHistory, // Use updated conversation history
+              selfUseConfig
             );
             
             // Merge the continuation
@@ -1762,7 +1845,8 @@ ${finalCode}
                     },
                     null, // No current code context
                     null, // No image
-                    null  // No conversation history
+                    null,  // No conversation history
+                    selfUseConfig
                   );
                   
                   finalCode = fixResult.content || fixResult;
@@ -1920,6 +2004,9 @@ ${finalCode}
         onClose={() => setIsSettingsOpen(false)}
         onSave={handleSaveSettings}
         initialSettings={apiSettings}
+        adminProfiles={adminProfilesInfo.profiles}
+        adminProfilesEnabled={adminProfilesInfo.enabled}
+        adminProfilesLoaded={adminProfilesInfo.loaded}
         language={language}
         setLanguage={setLanguage}
       />
